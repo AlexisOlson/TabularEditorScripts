@@ -111,8 +111,7 @@ try
     Func<string, string, bool> Eq = delegate(string a, string b) { 
         return string.Equals(
             a != null ? a.Trim() : null,
-            b != null ? b.Trim() : null,
-            StringComparison.OrdinalIgnoreCase
+            b != null ? b.Trim() : null
         );
     };
     
@@ -160,13 +159,13 @@ try
             
             // Value-based removals (checked after structure scan)
             if (REMOVE_DefaultValues) {
-                var dc = obj.Property("dataCategory", StringComparison.OrdinalIgnoreCase);
+                var dc = obj.Property("dataCategory");
                 if (dc != null && dc.Value is JValue && Eq((string)dc.Value, "Uncategorized")) {
                     toRemove.Add(dc);
                     Track("dataCategory=default");
                 }
                 
-                var sb = obj.Property("summarizeBy", StringComparison.OrdinalIgnoreCase);
+                var sb = obj.Property("summarizeBy");
                 if (sb != null && sb.Value is JValue && Eq((string)sb.Value, "none")) {
                     toRemove.Add(sb);
                     Track("summarizeBy=none");
@@ -174,12 +173,12 @@ try
             }
             
             if (REMOVE_RedundantNames) {
-                var name = obj.Property("name", StringComparison.OrdinalIgnoreCase);
+                var name = obj.Property("name");
                 if (name != null && name.Value is JValue) {
                     var nameStr = (string)name.Value;
                     var nameBracketed = nameStr != null ? string.Format("[{0}]", nameStr) : null;
 
-                    var src = obj.Property("sourceColumn", StringComparison.OrdinalIgnoreCase);
+                    var src = obj.Property("sourceColumn");
                     if (
                         src != null &&
                         src.Value is JValue &&
@@ -192,7 +191,7 @@ try
                         Track("sourceColumn=name");
                     }
 
-                    var disp = obj.Property("displayName", StringComparison.OrdinalIgnoreCase);  
+                    var disp = obj.Property("displayName");  
                     if (
                         disp != null &&
                         disp.Value is JValue &&
