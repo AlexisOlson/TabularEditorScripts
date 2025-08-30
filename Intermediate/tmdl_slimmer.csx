@@ -106,14 +106,14 @@ try
     Add(REMOVE_DisplayProps, "formatString",       @"^\s*formatString\s*(?:=|:)");
     Add(REMOVE_DisplayProps, "isDefaultLabel",     @"^\s*isDefaultLabel" + BOOL);
     Add(REMOVE_DisplayProps, "isDefaultImage",     @"^\s*isDefaultImage" + BOOL);
-    
+
     // Block starters that should be skipped entirely { ... } until braces close
-    var blockStarters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var blockStarters = new HashSet<string>();
     if (REMOVE_LanguageData) blockStarters.Add("linguisticMetadata");
     if (REMOVE_Annotations)  blockStarters.Add("extendedProperties");
 
     // ---------- Stats store ----------
-    var stats = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    var stats = new Dictionary<string, int>();
 
     // ---------- Find and sort all TMDL files (no LINQ) ----------
     string[] files = Directory.GetFiles(definitionPath, "*.tmdl", SearchOption.AllDirectories);
@@ -122,7 +122,7 @@ try
         Info("No TMDL files found in the selected folder.");
         return;
     }
-    Array.Sort(files, StringComparer.OrdinalIgnoreCase);
+    // (Optional simplification applied: no explicit Array.Sort)
 
     // ---------- Combined output buffer ----------
     var output = new StringBuilder();
@@ -140,13 +140,13 @@ try
     for (int fi = 0; fi < files.Length; fi++)
     {
         string filePath = files[fi];
-        string rel = filePath.StartsWith(defBase, StringComparison.OrdinalIgnoreCase)
+        string rel = filePath.StartsWith(defBase)
             ? filePath.Substring(defBase.Length)
             : Path.GetFileName(filePath);
         rel = rel.Replace('\\', '/');
 
         // Skip entire cultures/ subtree when language data removal is enabled
-        if (REMOVE_LanguageData && rel.StartsWith("cultures/", StringComparison.OrdinalIgnoreCase))
+        if (REMOVE_LanguageData && rel.StartsWith("cultures/"))
         {
             if (!stats.ContainsKey("cultures-folder")) stats["cultures-folder"] = 0;
             stats["cultures-folder"]++;
@@ -231,11 +231,9 @@ try
         if (wroteAny) filesProcessed++;
     }
 
-    // Normalize final text: strip BOM, trim EOL whitespace, remove all blank lines, ensure single trailing newline.
+    // Normalize final text: trim EOL whitespace, remove all blank lines, ensure single trailing newline.
     string finalOut = output.ToString();
-    if (!string.IsNullOrEmpty(finalOut) && finalOut[0] == '\uFEFF') finalOut = finalOut.Substring(1);
     finalOut = Regex.Replace(Regex.Replace(finalOut, @"[ \t]+\r?\n", "\n"), @"(?m)^\s*\r?\n", "").Trim() + Environment.NewLine;
-
 
     // ---------- Save as .slimdl (UTF-8 without BOM) ----------
     var parent = Directory.GetParent(modelFolder);
@@ -279,7 +277,7 @@ try
 
         // Sort keys without LINQ
         var keys = new List<string>(stats.Keys);
-        keys.Sort(StringComparer.OrdinalIgnoreCase);
+        keys.Sort();
         for (int i = 0; i < keys.Count; i++)
             summary.AppendLine(string.Format("  - {0}: {1:N0}", keys[i], stats[keys[i]]));
     }
