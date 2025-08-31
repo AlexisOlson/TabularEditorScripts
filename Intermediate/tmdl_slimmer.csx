@@ -2,7 +2,7 @@
 // Title: TMDL Slimmer - Strip metadata bloat for LLM context
 //
 // Author: Alexis Olson
-// Version: 1.0
+// Version: 1.1
 //
 // Description:
 //   Reads all *.tmdl files from a SemanticModel/definition folder,
@@ -22,9 +22,9 @@ using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
 // ==================== CONFIGURATION ====================
-bool REMOVE_Annotations  = true; // annotation, changedProperty, extendedProperties
+bool REMOVE_Annotations  = true; // annotation, changedProperty, extendedProperty/extendedProperties
 bool REMOVE_Lineage      = true; // lineageTag, sourceLineageTag
-bool REMOVE_LanguageData = true; // cultures folder, culture, linguisticMetadata
+bool REMOVE_LanguageData = true; // cultures folder (includes linguisticMetadata)
 bool REMOVE_ColumnMeta   = true; // summarizeBy, sourceColumn, dataCategory (+ select column booleans)
 bool REMOVE_InferredMeta = true; // isNameInferred, isDataTypeInferred, sourceProviderType
 bool REMOVE_DisplayProps = true; // isHidden, displayFolder, formatString, isDefaultLabel/Image
@@ -70,16 +70,11 @@ try
     // Annotations group
     Add(REMOVE_Annotations,  "annotation",         @"^\s*annotation\b");
     Add(REMOVE_Annotations,  "changedProperty",    @"^\s*changedProperty\b");
-    Add(REMOVE_Annotations,  "extendedProperties", @"^\s*extendedProperties" + ASSIGN + @"\s*\{?");
+    Add(REMOVE_Annotations,  "extendedProperty",   @"^\s*extendedPropert(?:y|ies)\b");
 
     // Lineage tracking group
     Add(REMOVE_Lineage,      "lineageTag",         @"^\s*lineageTag" + ASSIGN);
     Add(REMOVE_Lineage,      "sourceLineageTag",   @"^\s*sourceLineageTag" + ASSIGN);
-
-    // Language/culture group
-    Add(REMOVE_LanguageData, "culture",            @"^\s*culture" + ASSIGN);
-    Add(REMOVE_LanguageData, "refCulture",         @"^\s*ref\s+cultureInfo\b");
-    Add(REMOVE_LanguageData, "linguisticMetadata", @"^\s*linguisticMetadata" + ASSIGN + @"\s*\{?");
 
     // Column metadata group
     Add(REMOVE_ColumnMeta,   "dataCategory",       @"^\s*dataCategory" + ASSIGN);
@@ -102,8 +97,9 @@ try
 
     // Identify patterns that start multi-line blocks (need brace tracking)
     var blockStarters = new HashSet<string>();
-    if (REMOVE_LanguageData) blockStarters.Add("linguisticMetadata");
-    if (REMOVE_Annotations)  blockStarters.Add("extendedProperties");
+    if (REMOVE_Annotations)  {
+        blockStarters.Add("extendedProperty");
+    }
 
     // Track removal statistics for summary report
     var removalStats = new Dictionary<string, int>();
@@ -131,6 +127,8 @@ try
     output.AppendLine("// Generated: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
 
     long originalTotalSize = 0;
+    long culturesBytesRemoved = 0; // bytes saved by excluding cultures/ folder
+    int culturesFilesSkipped = 0;  // number of cultures/ tmdl files skipped
     int filesWithContent = 0;
 
     // Calculate base path for relative file names (normalize with trailing separator)
@@ -145,16 +143,20 @@ try
             : Path.GetFileName(filePath);
         relativePath = relativePath.Replace('\\', '/');
 
+        // Include every file's size in input total, even if we skip its content later
+        long fileSize = new FileInfo(filePath).Length;
+        originalTotalSize += fileSize;
+
         // Skip entire cultures/ subtree when language data removal is enabled
         if (REMOVE_LanguageData && relativePath.StartsWith("cultures/"))
         {
-            Bump("cultures-folder");
+            culturesBytesRemoved += fileSize; // track savings from cultures folder
+            culturesFilesSkipped++;
             continue;
         }
 
-        // Read file content and track original size
+        // Read file content
         string content = File.ReadAllText(filePath, Encoding.UTF8);
-        originalTotalSize += new FileInfo(filePath).Length;
 
         // Process content line by line
         string[] contentLines = content.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None);
@@ -265,14 +267,19 @@ try
     summary.AppendLine("TMDL Slimmer Results");
     summary.AppendLine("====================");
     summary.AppendLine(string.Format("Files processed: {0} of {1}", filesWithContent, tmdlFiles.Length));
+    if (culturesFilesSkipped > 0)
+        summary.AppendLine(string.Format("Culture files not processed: {0}", culturesFilesSkipped));
     summary.AppendLine(string.Format("Input size:  {0:N1} KB", originalTotalSize / 1024.0));
-    summary.AppendLine(string.Format("Output: {0} ({1:N1} KB)", Path.GetFileName(outputPath), outputSize / 1024.0));
+    summary.AppendLine(string.Format("Output size: {0:N1} KB", outputSize / 1024.0));
     summary.AppendLine(string.Format("Size reduction: {0:F1}%", reductionPercent));
 
     if (removalStats.Count > 0)
     {
         int totalRemovals = 0;
         foreach (int count in removalStats.Values) totalRemovals += count;
+        summary.AppendLine();
+        if (culturesBytesRemoved > 0)
+            summary.AppendLine(string.Format("Removed cultures folder: {0:N1} KB", culturesBytesRemoved / 1024.0));
         summary.AppendLine();
         summary.AppendLine(string.Format("Removed {0:N0} items:", totalRemovals));
 
