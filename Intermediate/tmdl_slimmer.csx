@@ -1,25 +1,18 @@
-// TMDL Slimmer (TE2)
-// ------------------------------------------------------------
-// Purpose
-//   Produce a single ".slimdl" file from a TMDL semantic model,
-//   removing noisy UI/engine metadata while preserving semantics
-//   that matter to reasoning (e.g., relationships, keys, uniqueness).
 //
-// Behavior
-//   - Prompts for the SemanticModel (or its "definition" folder).
-//   - Reads all *.tmdl under /definition.
-//   - Strips targeted properties (see pattern list).
-//   - Skips whole blocks for "extendedProperties" and "linguisticMetadata".
-//   - Preserves comments; removes ALL blank lines; trims trailing spaces.
-//   - Writes UTF-8 without BOM.
-//   - Prints a summary with basic stats.
+// Title: TMDL Slimmer - Strip metadata bloat for LLM context
 //
-// Notes
-//   - TE2-friendly: no classes, no local methods, no LINQ.
-//   - Boolean regex matches "prop = true/false", "prop: true/false",
-//     or bare "prop" with optional ";".
-//   - Keepers: isActive (relationship), isKey/isUnique (columns).
-// ------------------------------------------------------------
+// Author: Alexis Olson
+// Version: 1.0
+//
+// Description:
+//   Reads all *.tmdl files from a SemanticModel/definition folder,
+//   removes UI/engine metadata while preserving model semantics,
+//   and outputs a single .slimdl file for LLM consumption.
+//
+// Usage:
+//   - Run in Tabular Editor 2 or 3 (Advanced Scripting)
+//   - Select your SemanticModel folder when prompted
+//   - Choose where to save the output .slimdl file
 
 using System;
 using System.Collections.Generic;
@@ -28,8 +21,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
-// ---------------- Configuration toggles ----------------
-// Turn off any group below if you want to keep that metadata.
+// ==================== CONFIGURATION ====================
 bool REMOVE_Annotations  = true; // annotation, changedProperty, extendedProperties
 bool REMOVE_Lineage      = true; // lineageTag, sourceLineageTag
 bool REMOVE_LanguageData = true; // cultures folder, culture, linguisticMetadata
@@ -37,9 +29,10 @@ bool REMOVE_ColumnMeta   = true; // summarizeBy, sourceColumn, dataCategory (+ s
 bool REMOVE_InferredMeta = true; // isNameInferred, isDataTypeInferred, sourceProviderType
 bool REMOVE_DisplayProps = true; // isHidden, displayFolder, formatString, isDefaultLabel/Image
 
+// ==================== MAIN EXECUTION ====================
 try
 {
-    // ---------- Select the SemanticModel folder ----------
+    // Select SemanticModel folder
     string modelFolder = null;
     using (var dialog = new FolderBrowserDialog())
     {
@@ -49,237 +42,244 @@ try
         modelFolder = dialog.SelectedPath;
     }
 
-    // ---------- Locate the /definition root ----------
+    // Locate definition root - handle both cases: user selected SemanticModel or definition directly
     string definitionPath = Path.Combine(modelFolder, "definition");
     if (!Directory.Exists(definitionPath))
     {
-        // Fallback: user selected the /definition folder directly or a flat export
-        definitionPath = modelFolder;
+        definitionPath = modelFolder; // Fallback: user already selected the definition folder
         if (Directory.GetFiles(definitionPath, "*.tmdl", SearchOption.AllDirectories).Length == 0)
         {
-            Info("No TMDL files found in selected folder.");
+            Info("No TMDL files found in the selected folder.");
             return;
         }
     }
 
-    // ---------- Build removal patterns (compact, same logic) ----------
-    var patterns = new List<KeyValuePair<string, Regex>>();
-    RegexOptions RX = RegexOptions.IgnoreCase | RegexOptions.Compiled;
+    // Build removal patterns based on configuration flags
+    var patterns = new Dictionary<string, Regex>();
 
-    // Booleans may be "prop = true/false", "prop: true/false", or bare "prop" with optional ";"
-    string BOOL = @"(?:\s*(?:=|:)\s*(?:true|false))?\s*;?\s*$";
+    // Common regex components for matching property assignments
+    string ASSIGN = @"\s*(?:=|:)"; // matches optional whitespace then = or :
+    string BOOL   = @"(?:\s*(?:=|:)\s*(?:true|false))?\s*;?\s*$"; // matches optional boolean and semicolon
 
-    // Tiny helper to add a rule when its toggle is ON
-    Action<bool,string,string> Add = (on, key, pat) => { if (on) patterns.Add(new KeyValuePair<string, Regex>(key, new Regex(pat, RX))); };
+    // Helper to add patterns when corresponding removal flag is enabled
+    Action<bool,string,string> Add = (flag, name, pattern) =>
+    {
+        if (flag) patterns[name] = new Regex(pattern);
+    };
 
-    // Annotations / misc
+    // Annotations group
     Add(REMOVE_Annotations,  "annotation",         @"^\s*annotation\b");
     Add(REMOVE_Annotations,  "changedProperty",    @"^\s*changedProperty\b");
-    Add(REMOVE_Annotations,  "extendedProperties", @"^\s*extendedProperties\s*(?:=|:)\s*\{?");
+    Add(REMOVE_Annotations,  "extendedProperties", @"^\s*extendedProperties" + ASSIGN + @"\s*\{?");
 
-    // Lineage
-    Add(REMOVE_Lineage,      "lineageTag",         @"^\s*lineageTag\s*(?:=|:)");
-    Add(REMOVE_Lineage,      "sourceLineageTag",   @"^\s*sourceLineageTag\s*(?:=|:)");
+    // Lineage tracking group
+    Add(REMOVE_Lineage,      "lineageTag",         @"^\s*lineageTag" + ASSIGN);
+    Add(REMOVE_Lineage,      "sourceLineageTag",   @"^\s*sourceLineageTag" + ASSIGN);
 
-    // Language
-    Add(REMOVE_LanguageData, "culture",            @"^\s*culture\s*(?:=|:)");
+    // Language/culture group
+    Add(REMOVE_LanguageData, "culture",            @"^\s*culture" + ASSIGN);
     Add(REMOVE_LanguageData, "refCulture",         @"^\s*ref\s+cultureInfo\b");
-    Add(REMOVE_LanguageData, "linguisticMetadata", @"^\s*linguisticMetadata\s*(?:=|:)\s*\{?");
+    Add(REMOVE_LanguageData, "linguisticMetadata", @"^\s*linguisticMetadata" + ASSIGN + @"\s*\{?");
 
-    // Column metadata (non-boolean)
-    Add(REMOVE_ColumnMeta,   "dataCategory",       @"^\s*dataCategory\s*(?:=|:)");
-    Add(REMOVE_ColumnMeta,   "summarizeBy",        @"^\s*summarizeBy\s*(?:=|:)");
-    Add(REMOVE_ColumnMeta,   "sourceColumn",       @"^\s*sourceColumn\s*(?:=|:)");
-
-    // Column / engine booleans to strip (keep isKey/isUnique)
+    // Column metadata group
+    Add(REMOVE_ColumnMeta,   "dataCategory",       @"^\s*dataCategory" + ASSIGN);
+    Add(REMOVE_ColumnMeta,   "summarizeBy",        @"^\s*summarizeBy" + ASSIGN);
+    Add(REMOVE_ColumnMeta,   "sourceColumn",       @"^\s*sourceColumn" + ASSIGN);
     Add(REMOVE_ColumnMeta,   "isAvailableInMdx",   @"^\s*isAvailableInMdx" + BOOL);
     Add(REMOVE_ColumnMeta,   "isNullable",         @"^\s*isNullable" + BOOL);
 
-    // Inferred / engine
+    // Inferred metadata group
     Add(REMOVE_InferredMeta, "isNameInferred",     @"^\s*isNameInferred" + BOOL);
     Add(REMOVE_InferredMeta, "isDataTypeInferred", @"^\s*isDataTypeInferred" + BOOL);
-    Add(REMOVE_InferredMeta, "sourceProviderType", @"^\s*sourceProviderType\s*(?:=|:)");
+    Add(REMOVE_InferredMeta, "sourceProviderType", @"^\s*sourceProviderType" + ASSIGN);
 
-    // Presentation (UI)
+    // Display/UI properties group
     Add(REMOVE_DisplayProps, "isHidden",           @"^\s*isHidden" + BOOL);
-    Add(REMOVE_DisplayProps, "displayFolder",      @"^\s*displayFolder\s*(?:=|:)");
-    Add(REMOVE_DisplayProps, "formatString",       @"^\s*formatString\s*(?:=|:)");
+    Add(REMOVE_DisplayProps, "displayFolder",      @"^\s*displayFolder" + ASSIGN);
+    Add(REMOVE_DisplayProps, "formatString",       @"^\s*formatString" + ASSIGN);
     Add(REMOVE_DisplayProps, "isDefaultLabel",     @"^\s*isDefaultLabel" + BOOL);
     Add(REMOVE_DisplayProps, "isDefaultImage",     @"^\s*isDefaultImage" + BOOL);
 
-    // Block starters that should be skipped entirely { ... } until braces close
+    // Identify patterns that start multi-line blocks (need brace tracking)
     var blockStarters = new HashSet<string>();
     if (REMOVE_LanguageData) blockStarters.Add("linguisticMetadata");
     if (REMOVE_Annotations)  blockStarters.Add("extendedProperties");
 
-    // ---------- Stats store ----------
-    var stats = new Dictionary<string, int>();
+    // Track removal statistics for summary report
+    var removalStats = new Dictionary<string, int>();
 
-    // ---------- Find and sort all TMDL files (no LINQ) ----------
-    string[] files = Directory.GetFiles(definitionPath, "*.tmdl", SearchOption.AllDirectories);
-    if (files.Length == 0)
+    // Small helper to increment removal counters deterministically
+    Action<string> Bump = key =>
+    {
+        int v;
+        if (!removalStats.TryGetValue(key, out v)) v = 0; removalStats[key] = v + 1;
+    };
+    
+    // Collect all TMDL files recursively
+    string[] tmdlFiles = Directory.GetFiles(definitionPath, "*.tmdl", SearchOption.AllDirectories);
+    Array.Sort(tmdlFiles);
+    if (tmdlFiles.Length == 0)
     {
         Info("No TMDL files found in the selected folder.");
         return;
     }
-    // (Optional simplification applied: no explicit Array.Sort)
 
-    // ---------- Combined output buffer ----------
+    // Initialize output with header
     var output = new StringBuilder();
     output.AppendLine("// Combined TMDL (Slim)");
     output.AppendLine("// Source: " + Path.GetFileName(modelFolder));
     output.AppendLine("// Generated: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
 
-    long originalSize = 0;
-    int filesProcessed = 0;
+    long originalTotalSize = 0;
+    int filesWithContent = 0;
 
-    // Base path to produce relative names quickly (used only for the cultures/ skip)
-    string defBase = definitionPath.TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+    // Calculate base path for relative file names (normalize with trailing separator)
+    string definitionBasePath = definitionPath.TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
 
-    // ---------- Process each file ----------
-    for (int fi = 0; fi < files.Length; fi++)
+    // Process each TMDL file
+    foreach (string filePath in tmdlFiles)
     {
-        string filePath = files[fi];
-        string rel = filePath.StartsWith(defBase)
-            ? filePath.Substring(defBase.Length)
+        // Calculate relative path from definition root
+        string relativePath = filePath.StartsWith(definitionBasePath)
+            ? filePath.Substring(definitionBasePath.Length)
             : Path.GetFileName(filePath);
-        rel = rel.Replace('\\', '/');
+        relativePath = relativePath.Replace('\\', '/');
 
         // Skip entire cultures/ subtree when language data removal is enabled
-        if (REMOVE_LanguageData && rel.StartsWith("cultures/"))
+        if (REMOVE_LanguageData && relativePath.StartsWith("cultures/"))
         {
-            if (!stats.ContainsKey("cultures-folder")) stats["cultures-folder"] = 0;
-            stats["cultures-folder"]++;
+            Bump("cultures-folder");
             continue;
         }
 
-        // Read file and accumulate original size
+        // Read file content and track original size
         string content = File.ReadAllText(filePath, Encoding.UTF8);
-        originalSize += new FileInfo(filePath).Length;
+        originalTotalSize += new FileInfo(filePath).Length;
 
-        // Process line-by-line with simple block skipping
-        string[] lines = content.Split(new string[] { "\r\n", "\n", "\r" }, StringSplitOptions.None);
-        bool skipBlock = false;
-        int braceDepth = 0;
-        bool wroteAny = false;
+        // Process content line by line
+        string[] contentLines = content.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None);
 
-        for (int i = 0; i < lines.Length; i++)
+        // State tracking for multi-line block removal
+        bool inSkippedBlock = false;
+        int blockBraceDepth = 0;
+        bool fileHasOutput = false;
+
+        foreach (string line in contentLines)
         {
-            string line = lines[i];
-
-            // If skipping a block, adjust brace depth until we exit
-            if (skipBlock)
+            // Handle multi-line block skipping (tracks nested braces)
+            if (inSkippedBlock)
             {
-                for (int k = 0; k < line.Length; k++)
-                {
-                    char ch = line[k];
-                    if (ch == '{') braceDepth++;
-                    else if (ch == '}') braceDepth--;
+                blockBraceDepth += line.Split('{').Length - 1;
+                blockBraceDepth -= line.Split('}').Length - 1;
+                if (blockBraceDepth <= 0) 
+                { 
+                    inSkippedBlock = false; 
+                    blockBraceDepth = 0;
+                    continue; // Don't output closing brace line that ended the block
                 }
-                if (braceDepth <= 0) { skipBlock = false; braceDepth = 0; }
-                continue;
+                continue; // Continue skipping lines inside the block
             }
 
-            // Determine whether to remove the line (or start skipping a block)
-            bool removeLine = false;
-            for (int p = 0; p < patterns.Count; p++)
+            // Check if current line matches any removal pattern
+            bool shouldRemoveLine = false;
+            foreach (var patternEntry in patterns)
             {
-                var kv = patterns[p];
-                if (kv.Value.IsMatch(line))
+                if (patternEntry.Value.IsMatch(line))
                 {
-                    // Start a block skip if this key is a known block starter
-                    if (blockStarters.Contains(kv.Key))
+                    // Check if this starts a multi-line block that needs brace tracking
+                    if (blockStarters.Contains(patternEntry.Key))
                     {
-                        // Stat tracking
-                        if (!stats.ContainsKey(kv.Key)) stats[kv.Key] = 0;
-                        stats[kv.Key]++;
-
-                        // Compute initial brace delta on the same line
-                        int delta = 0;
-                        for (int k = 0; k < line.Length; k++)
-                        {
-                            char ch = line[k];
-                            if (ch == '{') delta++;
-                            else if (ch == '}') delta--;
-                        }
-
-                        braceDepth = delta;
-                        skipBlock  = braceDepth > 0; // if no opening '{', treat as single-line removal
-                        removeLine = true;
+                        Bump(patternEntry.Key);
+                        
+                        // Initialize brace tracking for this block
+                        blockBraceDepth = line.Split('{').Length - line.Split('}').Length;
+                        inSkippedBlock = true;
+                        shouldRemoveLine = true;
                         break;
                     }
                     else
                     {
-                        // Simple single-line removal
-                        if (!stats.ContainsKey(kv.Key)) stats[kv.Key] = 0;
-                        stats[kv.Key]++;
-                        removeLine = true;
+                        // Single-line removal
+                        Bump(patternEntry.Key);
+                        shouldRemoveLine = true;
                         break;
                     }
                 }
             }
 
-            if (!removeLine)
+            if (!shouldRemoveLine)
             {
-                // Trim trailing spaces/tabs on this line (keeps comments intact)
-                string trimmedRight = Regex.Replace(line, @"[ \t]+$", "");
-                output.AppendLine(trimmedRight);
-                wroteAny = true;
+                // Skip pure whitespace lines to reduce output bloat
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                // Keep the line (trim trailing whitespace for consistency)
+                output.AppendLine(line.TrimEnd());
+                fileHasOutput = true;
             }
         }
 
-        if (wroteAny) filesProcessed++;
+        if (fileHasOutput)
+        {
+            filesWithContent++;
+            output.AppendLine(); // Ensure separation between files
+        }
     }
 
-    // Normalize final text: trim EOL whitespace, remove all blank lines, ensure single trailing newline.
-    string finalOut = output.ToString();
-    finalOut = Regex.Replace(Regex.Replace(finalOut, @"[ \t]+\r?\n", "\n"), @"(?m)^\s*\r?\n", "").Trim() + Environment.NewLine;
+    // Squeeze excessive blank lines to maximum of one blank line
+    string finalOutput = Regex.Replace(output.ToString(), @"(\r?\n){3,}", Environment.NewLine + Environment.NewLine);
+    finalOutput = finalOutput.TrimEnd() + Environment.NewLine; // Ensure file ends with newline
 
-    // ---------- Save as .slimdl (UTF-8 without BOM) ----------
-    var parent = Directory.GetParent(modelFolder);
-    string suggested = Path.Combine(parent != null ? parent.FullName : modelFolder,
-                                    Path.GetFileName(modelFolder) + ".slimdl");
+    // Get output path via save dialog
+    var parentDir = Directory.GetParent(modelFolder);
+    string suggestedPath = Path.Combine(parentDir != null ? parentDir.FullName : modelFolder,
+                                        Path.GetFileName(modelFolder) + ".slimdl");
 
     string outputPath;
-    using (var sfd = new SaveFileDialog())
+    using (var saveDialog = new SaveFileDialog())
     {
-        sfd.Title = "Save slimmed TMDL";
-        sfd.Filter = "Slimmed TMDL (*.slimdl)|*.slimdl|Text files (*.tmdl;*.txt)|*.tmdl;*.txt|All files (*.*)|*.*";
-        sfd.DefaultExt = "slimdl";
-        sfd.AddExtension = true;
-        sfd.FileName = Path.GetFileName(suggested);
-        sfd.InitialDirectory = Path.GetDirectoryName(suggested);
-        sfd.OverwritePrompt = true;
-        sfd.CheckPathExists = true;
-        if (sfd.ShowDialog() != DialogResult.OK) return;
-        outputPath = sfd.FileName;
+        saveDialog.Title = "Save slimmed TMDL";
+        saveDialog.Filter = "Slimmed TMDL (*.slimdl)|*.slimdl|TMDL files (*.tmdl)|*.tmdl|All files (*.*)|*.*";
+        saveDialog.DefaultExt = "slimdl";
+        saveDialog.AddExtension = true;
+        saveDialog.FileName = Path.GetFileName(suggestedPath);
+        saveDialog.InitialDirectory = Path.GetDirectoryName(suggestedPath);
+        saveDialog.OverwritePrompt = true;
+        saveDialog.CheckPathExists = true;
+  
+        if (saveDialog.ShowDialog() != DialogResult.OK) return;
+        outputPath = saveDialog.FileName;
     }
 
-    File.WriteAllText(outputPath, finalOut, new UTF8Encoding(false));
+    // Write the combined, slimmed TMDL
+    File.WriteAllText(outputPath, finalOutput, new UTF8Encoding(false));
 
-    // ---------- Summary / stats ----------
-    long newSize = new FileInfo(outputPath).Length;
-    double reduction = (originalSize > 0) ? (1.0 - (double)newSize / (double)originalSize) * 100.0 : 0.0;
+    // Calculate size reduction metrics
+    long outputSize = new FileInfo(outputPath).Length;
+    double reductionPercent = (originalTotalSize > 0) 
+        ? (1.0 - (double)outputSize / (double)originalTotalSize) * 100.0 
+        : 0.0;
 
+    // Generate summary report
     var summary = new StringBuilder();
     summary.AppendLine("TMDL Slimmer Results");
     summary.AppendLine("====================");
-    summary.AppendLine(string.Format("Files processed: {0} of {1}", filesProcessed, files.Length));
-    summary.AppendLine(string.Format("Input size:  {0:N1} KB", originalSize / 1024.0));
-    summary.AppendLine(string.Format("Output: {0} ({1:N1} KB)", Path.GetFileName(outputPath), newSize / 1024.0));
-    summary.AppendLine(string.Format("Size reduction: {0:F1}%", reduction));
+    summary.AppendLine(string.Format("Files processed: {0} of {1}", filesWithContent, tmdlFiles.Length));
+    summary.AppendLine(string.Format("Input size:  {0:N1} KB", originalTotalSize / 1024.0));
+    summary.AppendLine(string.Format("Output: {0} ({1:N1} KB)", Path.GetFileName(outputPath), outputSize / 1024.0));
+    summary.AppendLine(string.Format("Size reduction: {0:F1}%", reductionPercent));
 
-    if (stats.Count > 0)
+    if (removalStats.Count > 0)
     {
-        int total = 0; foreach (var v in stats.Values) total += v;
+        int totalRemovals = 0;
+        foreach (int count in removalStats.Values) totalRemovals += count;
         summary.AppendLine();
-        summary.AppendLine(string.Format("Removed {0:N0} items:", total));
+        summary.AppendLine(string.Format("Removed {0:N0} items:", totalRemovals));
 
-        // Sort keys without LINQ
-        var keys = new List<string>(stats.Keys);
-        keys.Sort();
-        for (int i = 0; i < keys.Count; i++)
-            summary.AppendLine(string.Format("  - {0}: {1:N0}", keys[i], stats[keys[i]]));
+        var sortedKeys = new List<string>(removalStats.Keys);
+        sortedKeys.Sort();
+        foreach (string key in sortedKeys)
+            summary.AppendLine(string.Format("  - {0}: {1:N0}", key, removalStats[key]));
     }
 
     Info(summary.ToString());
